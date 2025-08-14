@@ -107,27 +107,124 @@ exports.deleteSantri = async (req, res) => {
     try {
         connection = await pool.getConnection();
         await connection.beginTransaction();
+
         const [santriData] = await connection.query('SELECT id_pengguna, id_wali FROM santri WHERE id = ?', [id_santri]);
         if (santriData.length === 0) {
             await connection.rollback();
-            return res.status(404).json({ message: 'Santri tidak ditemukan.' });
+            return res.status(444).json({ message: 'Santri tidak ditemukan.' });
         }
+        
         const { id_pengguna: id_pengguna_santri, id_wali: id_pengguna_wali } = santriData[0];
+        
+        // --- URUTAN DELETE YANG BENAR ---
+        // Hapus dari semua tabel 'anak' yang memiliki referensi ke 'santri.id' terlebih dahulu.
         await connection.query('DELETE FROM absensi WHERE id_santri = ?', [id_santri]);
         await connection.query('DELETE FROM nilai WHERE id_santri = ?', [id_santri]);
+        await connection.query('DELETE FROM progres_hafalan WHERE id_santri = ?', [id_santri]);
+        await connection.query('DELETE FROM catatan_perilaku WHERE id_santri = ?', [id_santri]);
+        await connection.query('DELETE FROM pembayaran WHERE id_santri = ?', [id_santri]);
+        
+        // --- BARIS YANG HILANG DITAMBAHKAN DI SINI ---
+        // Hapus dari tabel penghubung santri_kelas SEBELUM menghapus dari tabel santri.
+        await connection.query('DELETE FROM santri_kelas WHERE id_santri = ?', [id_santri]);
+        
+        // --- SEKARANG, BARU HAPUS DARI TABEL 'INDUK' ---
+        // Hapus data orang tua yang merujuk ke santri.id
+        await connection.query('DELETE FROM orang_tua WHERE id_santri = ?', [id_santri]);
+        // Hapus data santri itu sendiri. Query ini sekarang akan berhasil.
         await connection.query('DELETE FROM santri WHERE id = ?', [id_santri]);
-        if (id_pengguna_santri) await connection.query('DELETE FROM pengguna WHERE id = ?', [id_pengguna_santri]);
+
+        // Hapus akun pengguna yang terkait (jika ada)
+        if (id_pengguna_santri) {
+            await connection.query('DELETE FROM pengguna WHERE id = ?', [id_pengguna_santri]);
+        }
         if (id_pengguna_wali) {
-            await connection.query('DELETE FROM wali_santri WHERE id_pengguna = ?', [id_pengguna_wali]);
+            // Kita tidak perlu lagi menghapus dari wali_santri
             await connection.query('DELETE FROM pengguna WHERE id = ?', [id_pengguna_wali]);
         }
+
         await connection.commit();
-        res.status(200).json({ message: `Santri dengan ID ${id_santri} berhasil dihapus.` });
+        res.status(200).json({ message: `Santri dengan ID ${id_santri} dan semua data terkait berhasil dihapus.` });
+
     } catch (error) {
         if (connection) await connection.rollback();
         console.error('Error saat menghapus santri:', error);
         res.status(500).json({ message: 'Gagal menghapus data santri.' });
     } finally {
         if (connection) connection.release();
+    }
+};
+
+// --- Admin: Melihat Semua Data Santri (Dengan Pengelompokan) ---
+exports.getAllSantri = async (req, res) => {
+    // Ambil tahun ajaran saat ini untuk memfilter santri yang aktif di tahun ini
+    const tahun_ajaran_sekarang = new Date().getFullYear();
+
+    try {
+        // Query ini sekarang lebih kompleks, menggabungkan 5 tabel
+        const [santriList] = await pool.query(`
+            SELECT 
+                s.id AS id_santri,
+                s.nama_lengkap AS nama_santri,
+                s.nisn,
+                s.foto_profil,
+                w.nama_lengkap AS nama_wali,
+                k.nama_kelas,
+                jp.nama_jenjang
+            FROM santri s
+            LEFT JOIN pengguna w ON s.id_wali = w.id
+            LEFT JOIN santri_kelas sk ON s.id = sk.id_santri
+            LEFT JOIN kelas k ON sk.id_kelas = k.id
+            LEFT JOIN jenjang_pendidikan jp ON k.id_jenjang = jp.id
+            WHERE sk.tahun_ajaran = ? OR sk.tahun_ajaran IS NULL
+            ORDER BY jp.nama_jenjang, k.nama_kelas, s.nama_lengkap
+        `, [tahun_ajaran_sekarang]);
+
+        // Mengelompokkan hasil berdasarkan jenjang dan kelas
+        const groupedData = santriList.reduce((acc, santri) => {
+            // Tentukan kategori jenjang, default ke 'Belum Ditempatkan'
+            const jenjang = santri.nama_jenjang || 'Santri Belum Ditempatkan di Kelas';
+            // Tentukan nama kelas
+            const kelas = santri.nama_kelas;
+
+            // Buat objek jenjang jika belum ada
+            if (!acc[jenjang]) {
+                acc[jenjang] = {};
+            }
+
+            // Jika santri punya kelas, kelompokkan berdasarkan nama kelas
+            if (kelas) {
+                if (!acc[jenjang][kelas]) {
+                    acc[jenjang][kelas] = [];
+                }
+                acc[jenjang][kelas].push({
+                    id_santri: santri.id_santri,
+                    nama_santri: santri.nama_santri,
+                    nisn: santri.nisn,
+                    foto_profil: santri.foto_profil,
+                    nama_wali: santri.nama_wali
+                });
+            } else {
+                // Jika santri belum punya kelas, masukkan ke dalam array 'tanpa_kelas'
+                if (!acc[jenjang].tanpa_kelas) {
+                    acc[jenjang].tanpa_kelas = [];
+                }
+                 acc[jenjang].tanpa_kelas.push({
+                    id_santri: santri.id_santri,
+                    nama_santri: santri.nama_santri,
+                    nisn: santri.nisn,
+                    foto_profil: santri.foto_profil,
+                    nama_wali: santri.nama_wali
+                });
+            }
+            
+            return acc;
+        }, {});
+
+        res.status(200).json(groupedData);
+
+    } catch (error) {
+        console.error('Error saat mengambil semua data santri:', error);
+        res.status(500).json({ message: 'Gagal mengambil data semua santri.' });
     }
 };

@@ -3,15 +3,31 @@
 const pool = require('../config/db');
 const bcrypt = require('bcryptjs');
 
-// --- Fungsi untuk POST /register ---
+// --- Fungsi untuk Pendaftaran Baru (Dengan Validasi Nomor Induk) ---
 exports.register = async (req, res) => {
-    const { 
-        nama_wali, email_wali, nomor_hp_wali, hubungan_wali, 
-        nama_santri, tanggal_lahir_santri, jenis_kelamin, alamat
+    const {
+        // Data Santri
+        nomor_induk,
+        nama_santri, tempat_lahir_santri, tanggal_lahir_santri, jenis_kelamin, anak_ke, dari_bersaudara, agama, alamat_santri,
+        // Data Ayah
+        nama_ayah, tempat_lahir_ayah, tanggal_lahir_ayah, pekerjaan_ayah, pendidikan_ayah, alamat_ayah, nomor_hp_ayah,
+        // Data Ibu
+        nama_ibu, tempat_lahir_ibu, tanggal_lahir_ibu, pekerjaan_ibu, pendidikan_ibu, alamat_ibu, nomor_hp_ibu,
+        // Data Akun Wali
+        email_wali, hubungan_wali
     } = req.body;
-    
-    if (!nama_wali || !email_wali || !nomor_hp_wali || !hubungan_wali || !nama_santri || !tanggal_lahir_santri || !jenis_kelamin || !alamat) {
-        return res.status(400).json({ message: 'Data pendaftaran tidak lengkap. Harap isi semua kolom.' });
+
+    // 1. Validasi input dasar
+    if (!nomor_induk || !nama_santri || !tanggal_lahir_santri || !email_wali) {
+        return res.status(400).json({ message: 'Nomor Induk, data santri, dan email wali harus diisi lengkap.' });
+    }
+
+    // 2. Validasi spesifik untuk Nomor Induk
+    if (!/^\d+$/.test(nomor_induk)) {
+        return res.status(400).json({ message: 'Nomor Induk hanya boleh berisi angka.' });
+    }
+    if (nomor_induk.length !== 13) {
+        return res.status(400).json({ message: 'Nomor Induk harus terdiri dari 13 angka.' });
     }
 
     let connection; 
@@ -19,35 +35,62 @@ exports.register = async (req, res) => {
         connection = await pool.getConnection();
         await connection.beginTransaction();
 
-        const [emailCheck] = await connection.query('SELECT email FROM pengguna WHERE email = ?', [email_wali]);
+        // 3. Cek duplikasi email wali dan nomor induk
+        const [emailCheck] = await connection.query('SELECT id FROM pengguna WHERE email = ?', [email_wali]);
         if (emailCheck.length > 0) {
             await connection.rollback();
-            return res.status(409).json({ message: 'Email wali sudah terdaftar.' });
+            return res.status(409).json({ message: 'Email wali ini sudah terdaftar.' });
+        }
+        const [indukCheck] = await connection.query('SELECT id FROM santri WHERE nomor_induk = ?', [nomor_induk]);
+        if (indukCheck.length > 0) {
+            await connection.rollback();
+            return res.status(409).json({ message: 'Nomor Induk ini sudah terdaftar.' });
+        }
+
+        // 4. Tentukan data untuk akun pengguna Wali
+        let nama_wali_akun, nomor_hp_wali_akun;
+        if (hubungan_wali && hubungan_wali.toLowerCase() === 'ayah') {
+            nama_wali_akun = nama_ayah;
+            nomor_hp_wali_akun = nomor_hp_ayah;
+        } else {
+            nama_wali_akun = nama_ibu;
+            nomor_hp_wali_akun = nomor_hp_ibu;
         }
 
         const tempPassword = tanggal_lahir_santri.replace(/-/g, '');
         const hashedPassword = await bcrypt.hash(tempPassword, 10);
-
+        
+        // 5. Buat akun PENGGUNA untuk Wali
         const [resultWali] = await connection.query(
             'INSERT INTO pengguna (nama_lengkap, email, kata_sandi, nomor_hp, peran, status_aktif) VALUES (?, ?, ?, ?, ?, ?)',
-            [nama_wali, email_wali, hashedPassword, nomor_hp_wali, 'Wali Santri', false]
+            [nama_wali_akun, email_wali, hashedPassword, nomor_hp_wali_akun, 'Wali Santri', false]
         );
-        const idWali = resultWali.insertId;
+        const idWaliPengguna = resultWali.insertId;
 
-        await connection.query('INSERT INTO wali_santri (id_pengguna, hubungan) VALUES (?, ?)', [idWali, hubungan_wali]);
-        
+        // 6. Buat entri baru di tabel SANTRI
+        const [resultSantri] = await connection.query(
+            'INSERT INTO santri (id_wali, nomor_induk, nama_lengkap, tempat_lahir, tanggal_lahir, jenis_kelamin, anak_ke, dari_bersaudara, agama, alamat, tanggal_daftar) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            [idWaliPengguna, nomor_induk, nama_santri, tempat_lahir_santri, tanggal_lahir_santri, jenis_kelamin, anak_ke, dari_bersaudara, agama, alamat_santri, new Date()]
+        );
+        const idSantri = resultSantri.insertId;
+
+        // 7. Simpan data detail Ayah dan Ibu
         await connection.query(
-            'INSERT INTO santri (id_wali, nama_lengkap, tanggal_lahir, jenis_kelamin, alamat, tanggal_daftar) VALUES (?, ?, ?, ?, ?, ?)',
-            [idWali, nama_santri, tanggal_lahir_santri, jenis_kelamin, alamat, new Date()]
+            'INSERT INTO orang_tua (id_santri, status_hubungan, nama_lengkap, tempat_lahir, tanggal_lahir, pekerjaan, pendidikan_terakhir, alamat, nomor_hp) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            [idSantri, 'Ayah', nama_ayah, tempat_lahir_ayah, tanggal_lahir_ayah, pekerjaan_ayah, pendidikan_ayah, alamat_ayah, nomor_hp_ayah]
+        );
+        await connection.query(
+            'INSERT INTO orang_tua (id_santri, status_hubungan, nama_lengkap, tempat_lahir, tanggal_lahir, pekerjaan, pendidikan_terakhir, alamat, nomor_hp) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            [idSantri, 'Ibu', nama_ibu, tempat_lahir_ibu, tanggal_lahir_ibu, pekerjaan_ibu, pendidikan_ibu, alamat_ibu, nomor_hp_ibu]
         );
         
         await connection.commit();
-        res.status(201).json({ message: 'Pendaftaran berhasil. Menunggu verifikasi admin.' });
+        res.status(201).json({ message: 'Pendaftaran berhasil. Data Anda akan diverifikasi oleh admin.' });
 
     } catch (error) {
         if (connection) await connection.rollback();
         console.error('Ada error saat pendaftaran:', error);
-        res.status(500).json({ message: 'Pendaftaran gagal.' });
+        res.status(500).json({ message: 'Pendaftaran gagal karena kesalahan server.' });
     } finally {
         if (connection) connection.release();
     }
