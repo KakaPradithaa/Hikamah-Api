@@ -35,7 +35,7 @@ pool.getConnection()
 // --- Konfigurasi Middleware Utama ---
 
 app.use(cors({
-    origin: 'http://localhost:3000', // Ganti dengan URL frontend Anda
+    origin: 'http://localhost:3000', 
     credentials: true
 }));
 
@@ -63,13 +63,19 @@ const santriRoutes = require('./routes/santriRoutes');
 const adminRoutes = require('./routes/adminRoutes'); 
 const santriManagementRoutes = require('./routes/santriManagementRoutes'); 
 const guruRoutes = require('./routes/guruRoutes');
+const guruManagementRoutes = require('./routes/guruManagementRoutes'); 
+const kelasManagementRoutes = require('./routes/kelasManagementRoutes');
+const akademikRoutes = require('./routes/akademikRoutes');
+
 
 app.use('/api/auth', authRoutes);
 app.use('/api/santri', santriRoutes);
 app.use('/api/admin', adminRoutes); 
 app.use('/api/admin', santriManagementRoutes); 
 app.use('/api/guru', guruRoutes);
-
+app.use('/api/admin', guruManagementRoutes); 
+app.use('/api/admin', kelasManagementRoutes);
+app.use('/api/admin', akademikRoutes);
 
 
 // --- Rute Dasar & Listener Server ---

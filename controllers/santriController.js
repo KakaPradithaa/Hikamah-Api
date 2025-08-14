@@ -127,3 +127,309 @@ exports.uploadPhoto = async (req, res) => {
         res.status(500).json({ message: "Gagal menyimpan foto." });
     }
 };
+
+// --- Fungsi untuk Santri melihat daftar mata pelajarannya (VERSI DINAMIS) ---
+exports.getMyMataPelajaran = async (req, res) => {
+    const { id_santri } = req.session.user;
+    // 1. Ambil tahun ajaran dari query parameter di URL
+    const { tahun_ajaran } = req.query;
+
+    // 2. Validasi: pastikan tahun ajaran diberikan
+    if (!tahun_ajaran) {
+        return res.status(400).json({ message: "Parameter 'tahun_ajaran' harus disertakan." });
+    }
+    
+    try {
+        // 3. Cari ID kelas santri untuk tahun ajaran yang diminta
+        const [kelasInfo] = await pool.query(
+            'SELECT id_kelas FROM santri_kelas WHERE id_santri = ? AND tahun_ajaran = ?',
+            [id_santri, tahun_ajaran] // <-- Gunakan tahun_ajaran dari URL
+        );
+
+        if (kelasInfo.length === 0) {
+            return res.status(200).json([]); // Santri tidak di kelas manapun pada tahun itu
+        }
+        const id_kelas_santri = kelasInfo[0].id_kelas;
+
+        // 4. Cari jadwal mengajar untuk kelas dan tahun ajaran yang diminta
+        const [mapelList] = await pool.query(`
+            SELECT 
+                mp.nama_mapel,
+                p.nama_lengkap AS nama_guru
+            FROM jadwal_mengajar jm
+            JOIN mata_pelajaran mp ON jm.id_mapel = mp.id
+            JOIN guru g ON jm.id_guru = g.id
+            JOIN pengguna p ON g.id_pengguna = p.id
+            WHERE jm.id_kelas = ? AND jm.tahun_ajaran = ?
+            ORDER BY mp.nama_mapel ASC
+        `, [id_kelas_santri, tahun_ajaran]); // <-- Gunakan tahun_ajaran dari URL
+
+        res.status(200).json(mapelList);
+
+    } catch (error) {
+        console.error("Error saat santri mengambil daftar mapel:", error);
+        res.status(500).json({ message: "Gagal mengambil daftar mata pelajaran." });
+    }
+};
+
+// --- Fungsi untuk Santri melihat rekap nilainya sendiri ---
+exports.getMyNilai = async (req, res) => {
+    const { id_santri } = req.session.user;
+
+    try {
+        // Query ini menggabungkan tabel nilai dengan mata pelajaran untuk mendapatkan nama mapel
+        const [nilaiList] = await pool.query(`
+            SELECT 
+                n.tahun_ajaran,
+                n.semester,
+                mp.nama_mapel,
+                n.nilai_tugas,
+                n.nilai_uts,
+                n.nilai_uas,
+                n.nilai_akhir
+            FROM nilai n
+            JOIN mata_pelajaran mp ON n.id_mapel = mp.id
+            WHERE n.id_santri = ?
+            ORDER BY n.tahun_ajaran DESC, n.semester DESC, mp.nama_mapel ASC
+        `, [id_santri]);
+
+        // (Opsional) Mengelompokkan hasil berdasarkan tahun ajaran dan semester
+        const groupedNilai = nilaiList.reduce((acc, nilai) => {
+            const key = `${nilai.tahun_ajaran} - Semester ${nilai.semester}`;
+            if (!acc[key]) {
+                acc[key] = [];
+            }
+            acc[key].push({
+                mata_pelajaran: nilai.nama_mapel,
+                nilai_tugas: nilai.nilai_tugas,
+                nilai_uts: nilai.nilai_uts,
+                nilai_uas: nilai.nilai_uas,
+                nilai_akhir: nilai.nilai_akhir
+            });
+            return acc;
+        }, {});
+
+        res.status(200).json(groupedNilai);
+
+    } catch (error) {
+        console.error("Error saat santri mengambil data nilai:", error);
+        res.status(500).json({ message: "Gagal mengambil data nilai." });
+    }
+};
+
+// Fungsi helper untuk predikat (tetap kita gunakan)
+function getPredikat(nilai) {
+    if (nilai === null || nilai === undefined) return '-';
+    if (nilai >= 90) return 'A';
+    if (nilai >= 80) return 'B';
+    if (nilai >= 70) return 'C';
+    return 'D';
+}
+
+exports.getRaporSemester = async (req, res) => {
+    const { id_santri } = req.session.user;
+    const { tahun_ajaran, semester } = req.query;
+
+    if (!tahun_ajaran || !semester) {
+        return res.status(400).json({ message: "Tahun ajaran dan semester harus disertakan." });
+    }
+
+    try {
+        // 1. Ambil semua data nilai, TERMASUK deskripsi_guru
+        const [nilaiList] = await pool.query(`
+            SELECT 
+                mp.nama_mapel,
+                mp.kategori,
+                n.nilai_akhir,
+                n.deskripsi_guru -- <-- Ambil deskripsi dari DB
+            FROM nilai n
+            JOIN mata_pelajaran mp ON n.id_mapel = mp.id
+            WHERE n.id_santri = ? AND n.tahun_ajaran = ? AND n.semester = ?
+            ORDER BY mp.kategori, mp.nama_mapel
+        `, [id_santri, tahun_ajaran, semester]);
+
+        if (nilaiList.length === 0) {
+            return res.status(404).json({ message: `Tidak ada data nilai untuk periode ini.` });
+        }
+
+        // 2. Lakukan perhitungan agregat (tetap sama)
+        let jumlah_nilai = 0;
+        nilaiList.forEach(n => { jumlah_nilai += n.nilai_akhir ? Number(n.nilai_akhir) : 0; });
+        const rata_rata = nilaiList.length > 0 ? (jumlah_nilai / nilaiList.length) : 0;
+
+        const predikat_keseluruhan = getPredikat(rata_rata);
+        let status_kenaikan = "Belum Ditentukan";
+        if (semester.toLowerCase() === 'genap') {
+            status_kenaikan = rata_rata >= 75 ? "Naik Kelas" : "Tidak Naik Kelas";
+        }
+
+        // 3. Kelompokkan nilai berdasarkan kategori
+        const nilai_per_kategori = nilaiList.reduce((acc, nilai) => {
+            const kategori = nilai.kategori || 'Lainnya';
+            if (!acc[kategori]) acc[kategori] = [];
+            
+            acc[kategori].push({
+                mata_pelajaran: nilai.nama_mapel,
+                nilai_akhir: nilai.nilai_akhir,
+                predikat: getPredikat(nilai.nilai_akhir), // <-- Buat predikat otomatis
+                deskripsi: nilai.deskripsi_guru || "Belum ada deskripsi dari guru." // <-- Tampilkan deskripsi dari DB
+            });
+            return acc;
+        }, {});
+        
+        const rapor = {
+            // ... (info santri dan periode)
+            rekapitulasi: {
+                jumlah_nilai: parseFloat(jumlah_nilai.toFixed(2)),
+                rata_rata: parseFloat(rata_rata.toFixed(2)),
+                predikat: predikat_keseluruhan,
+                status_kenaikan: status_kenaikan
+            },
+            detail_nilai: nilai_per_kategori
+        };
+
+        res.status(200).json(rapor);
+
+    } catch (error) {
+        console.error("Error saat generate rapor:", error);
+        res.status(500).json({ message: "Gagal mengambil data rapor." });
+    }
+};
+
+exports.getRaporSemester = async (req, res) => {
+    const { id_santri } = req.session.user;
+    const { tahun_ajaran, semester } = req.query;
+
+    if (!tahun_ajaran || !semester) {
+        return res.status(400).json({ message: "Tahun ajaran dan semester harus disertakan." });
+    }
+
+    try {
+        // --- QUERY SQL YANG SUDAH DIPERBAIKI ---
+        // Placeholder '...' telah diganti dengan query yang benar.
+        const [nilaiList] = await pool.query(`
+            SELECT 
+                mp.nama_mapel,
+                mp.kategori,
+                n.nilai_akhir,
+                n.deskripsi_guru
+            FROM nilai n
+            JOIN mata_pelajaran mp ON n.id_mapel = mp.id
+            WHERE n.id_santri = ? AND n.tahun_ajaran = ? AND n.semester = ?
+            ORDER BY mp.kategori, mp.nama_mapel
+        `, [id_santri, tahun_ajaran, semester]);
+
+        if (nilaiList.length === 0) {
+            return res.status(404).json({ message: `Tidak ada data nilai yang ditemukan untuk periode ${tahun_ajaran} - ${semester}.` });
+        }
+
+        // ... (sisa logika perhitungan agregat, predikat, dan status kenaikan dari DB tetap sama) ...
+        let jumlah_nilai = 0;
+        nilaiList.forEach(n => { jumlah_nilai += n.nilai_akhir ? Number(n.nilai_akhir) : 0; });
+        const rata_rata = nilaiList.length > 0 ? (jumlah_nilai / nilaiList.length) : 0;
+        const predikat_keseluruhan = getPredikat(rata_rata);
+        
+        const [statusData] = await pool.query(
+            'SELECT status_kenaikan FROM santri_kelas WHERE id_santri = ? AND tahun_ajaran = ?',
+            [id_santri, tahun_ajaran]
+        );
+        
+        const status_kenaikan = (statusData.length > 0) ? statusData[0].status_kenaikan : "Belum Ditentukan";
+
+        const nilai_per_kategori = nilaiList.reduce((acc, nilai) => {
+            const kategori = nilai.kategori || 'Lainnya';
+            if (!acc[kategori]) acc[kategori] = [];
+            
+            acc[kategori].push({
+                mata_pelajaran: nilai.nama_mapel,
+                nilai_akhir: nilai.nilai_akhir,
+                predikat: getPredikat(nilai.nilai_akhir),
+                deskripsi: nilai.deskripsi_guru || "Belum ada deskripsi dari guru."
+            });
+            return acc;
+        }, {});
+        
+        const rapor = {
+            santri_id: id_santri,
+            periode: {
+                tahun_ajaran: parseInt(tahun_ajaran),
+                semester: semester
+            },
+            rekapitulasi: {
+                jumlah_nilai: parseFloat(jumlah_nilai.toFixed(2)),
+                rata_rata: parseFloat(rata_rata.toFixed(2)),
+                predikat: predikat_keseluruhan,
+                status_kenaikan: status_kenaikan
+            },
+            detail_nilai: nilai_per_kategori
+        };
+
+        res.status(200).json(rapor);
+
+    } catch (error) {
+        console.error("Error saat generate rapor:", error);
+        res.status(500).json({ message: "Gagal mengambil data rapor." });
+    }
+};
+
+// --- Fungsi untuk GET /profile ---
+// Mengambil semua data detail untuk santri yang sedang login
+exports.getFullProfile = async (req, res) => {
+    const { id_santri } = req.session.user;
+
+    try {
+        // 1. Ambil data utama dari tabel santri dan akun wali terkait
+        const [santriData] = await pool.query(`
+            SELECT 
+                s.nama_lengkap, s.nomor_induk, s.nisn, s.tempat_lahir, s.tanggal_lahir, 
+                s.jenis_kelamin, s.anak_ke, s.dari_bersaudara, s.agama, s.alamat, s.foto_profil,
+                p_wali.email AS email_wali
+            FROM santri s
+            JOIN pengguna p_wali ON s.id_wali = p_wali.id
+            WHERE s.id = ?
+        `, [id_santri]);
+
+        if (santriData.length === 0) {
+            return res.status(404).json({ message: "Data profil santri tidak ditemukan." });
+        }
+
+        // 2. Ambil data detail Ayah dan Ibu dari tabel orang_tua
+        const [orangTuaData] = await pool.query(
+            'SELECT * FROM orang_tua WHERE id_santri = ?',
+            [id_santri]
+        );
+
+        // 3. Pisahkan data Ayah dan Ibu
+        const ayahData = orangTuaData.find(ortu => ortu.status_hubungan === 'Ayah') || {};
+        const ibuData = orangTuaData.find(ortu => ortu.status_hubungan === 'Ibu') || {};
+
+        // 4. Susun respons JSON yang terstruktur
+        const fullProfile = {
+            santri: santriData[0],
+            ayah: {
+                nama_lengkap: ayahData.nama_lengkap,
+                tempat_lahir: ayahData.tempat_lahir,
+                tanggal_lahir: ayahData.tanggal_lahir,
+                pekerjaan: ayahData.pekerjaan,
+                pendidikan_terakhir: ayahData.pendidikan_terakhir,
+                alamat: ayahData.alamat,
+                nomor_hp: ayahData.nomor_hp
+            },
+            ibu: {
+                nama_lengkap: ibuData.nama_lengkap,
+                tempat_lahir: ibuData.tempat_lahir,
+                tanggal_lahir: ibuData.tanggal_lahir,
+                pekerjaan: ibuData.pekerjaan,
+                pendidikan_terakhir: ibuData.pendidikan_terakhir,
+                alamat: ibuData.alamat,
+                nomor_hp: ibuData.nomor_hp
+            }
+        };
+
+        res.status(200).json(fullProfile);
+
+    } catch (error) {
+        console.error("Error saat mengambil profil lengkap santri:", error);
+        res.status(500).json({ message: "Gagal mengambil data profil." });
+    }
+};

@@ -29,9 +29,13 @@ router.use(verifySantri);
 
 
 router.get('/biodata', santriController.getBiodata);
+router.get('/my-mapel', santriController.getMyMataPelajaran);
 router.put('/update-biodata', santriController.updateBiodata);
 router.post('/change-password', santriController.changePassword);
 router.put('/change-username', santriController.changeUsername);
 router.post('/upload-photo', upload.single('profilePhoto'), santriController.uploadPhoto);
+router.get('/my-nilai', santriController.getMyNilai);
+router.get('/rapor', santriController.getRaporSemester);
+router.get('/profile', santriController.getFullProfile);
 
 module.exports = router;

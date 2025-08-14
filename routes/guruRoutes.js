@@ -1,27 +1,22 @@
 // routes/guruRoutes.js
 
 const express = require('express');
-const pool = require('../config/db');
 const router = express.Router();
-const { verifyGuru } = require('../middleware/authMiddleware');
 
-router.post('/absensi', verifyGuru, async (req, res) => {
-    const { id_santri, tanggal, status } = req.body;
+// 1. Impor SEMUA middleware dan controller yang dibutuhkan.
+const { verifyGuru, verifyWaliKelas } = require('../middleware/authMiddleware');
+const guruController = require('../controllers/guruController');
 
-    if (!id_santri || !tanggal || !status) {
-        return res.status(400).json({ message: 'Data absensi tidak lengkap.' });
-    }
+router.get('/profile', verifyGuru, guruController.getProfile);
 
-    try {
-        await pool.query(
-            'INSERT INTO absensi (id_santri, tanggal, status) VALUES (?, ?, ?)',
-            [id_santri, tanggal, status]
-        );
-        res.status(201).json({ message: 'Absensi berhasil dicatat.' });
-    } catch (error) {
-        console.error('Error mencatat absensi:', error);
-        res.status(500).json({ message: 'Gagal mencatat absensi.' });
-    }
-});
+// 2. Rute untuk absensi sekarang menunjuk ke fungsi 'recordAbsensi' di controller.
+router.post('/absensi', verifyGuru, guruController.recordAbsensi);
+
+
+// 3. Rute baru untuk Wali Kelas sekarang akan berfungsi.
+router.get('/wali-kelas/santri', verifyWaliKelas, guruController.getSantriByWaliKelas);
+router.post('/nilai', verifyGuru, guruController.inputNilai);
+router.put('/wali-kelas/santri/:id_santri/status-kenaikan', verifyWaliKelas, guruController.setKenaikanKelas);
+
 
 module.exports = router;
