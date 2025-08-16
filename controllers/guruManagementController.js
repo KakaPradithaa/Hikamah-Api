@@ -48,9 +48,11 @@ exports.createGuru = async (req, res) => {
     }
 };
 
-// --- Admin: Melihat Semua Data Guru ---
 exports.getAllGuru = async (req, res) => {
     try {
+        // --- QUERY DIPERBAIKI ---
+        // Query ini sekarang hanya mengambil dari `guru` dan `pengguna`,
+        // memastikan SEMUA guru akan muncul.
         const [guruList] = await pool.query(`
             SELECT 
                 g.id AS id_guru,
@@ -58,11 +60,6 @@ exports.getAllGuru = async (req, res) => {
                 p.nama_lengkap,
                 p.username,
                 p.email,
-                g.tempat_lahir,
-                g.tanggal_lahir,
-                g.alamat,
-                g.tahun_mengajar,
-                g.pendidikan_tertinggi,
                 g.jabatan
             FROM guru g
             JOIN pengguna p ON g.id_pengguna = p.id

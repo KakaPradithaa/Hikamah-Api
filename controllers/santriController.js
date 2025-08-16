@@ -296,50 +296,54 @@ exports.getRaporSemester = async (req, res) => {
     }
 };
 
+// --- Fungsi untuk GET /rapor (Versi Final) ---
 exports.getRaporSemester = async (req, res) => {
     const { id_santri } = req.session.user;
     const { tahun_ajaran, semester } = req.query;
 
-    if (!tahun_ajaran || !semester) {
-        return res.status(400).json({ message: "Tahun ajaran dan semester harus disertakan." });
-    }
+    if (!tahun_ajaran || !semester) return res.status(400).json({ message: "Tahun ajaran dan semester harus disertakan." });
 
     try {
-        // --- QUERY SQL YANG SUDAH DIPERBAIKI ---
-        // Placeholder '...' telah diganti dengan query yang benar.
+        // 1. Ambil data nilai
         const [nilaiList] = await pool.query(`
-            SELECT 
-                mp.nama_mapel,
-                mp.kategori,
-                n.nilai_akhir,
-                n.deskripsi_guru
-            FROM nilai n
-            JOIN mata_pelajaran mp ON n.id_mapel = mp.id
+            SELECT mp.nama_mapel, mp.kategori, n.nilai_akhir, n.deskripsi_guru
+            FROM nilai n JOIN mata_pelajaran mp ON n.id_mapel = mp.id
             WHERE n.id_santri = ? AND n.tahun_ajaran = ? AND n.semester = ?
             ORDER BY mp.kategori, mp.nama_mapel
         `, [id_santri, tahun_ajaran, semester]);
+        
+        // 2. Ambil Rekap Absensi
+        const [rekapAbsensi] = await pool.query(`
+            SELECT status, COUNT(id) as jumlah FROM absensi 
+            WHERE id_santri = ? AND YEAR(tanggal) >= ? AND YEAR(tanggal) <= ? AND 
+                  ((MONTH(tanggal) BETWEEN 7 AND 12 AND ? = 'Ganjil') OR (MONTH(tanggal) BETWEEN 1 AND 6 AND ? = 'Genap'))
+            GROUP BY status
+        `, [id_santri, tahun_ajaran, parseInt(tahun_ajaran)+1, semester, semester]);
+        
+        const absensi = { Sakit: 0, Izin: 0, Alfa: 0 };
+        rekapAbsensi.forEach(item => { if (absensi.hasOwnProperty(item.status)) absensi[item.status] = item.jumlah; });
 
-        if (nilaiList.length === 0) {
-            return res.status(404).json({ message: `Tidak ada data nilai yang ditemukan untuk periode ${tahun_ajaran} - ${semester}.` });
-        }
+        // 3. Ambil Catatan Perilaku
+        const [catatanPerilaku] = await pool.query(
+            'SELECT kategori, deskripsi, tanggal_catatan FROM catatan_perilaku WHERE id_santri = ? AND tahun_ajaran = ? AND semester = ? ORDER BY tanggal_catatan DESC',
+            [id_santri, tahun_ajaran, semester]
+        );
 
-        // ... (sisa logika perhitungan agregat, predikat, dan status kenaikan dari DB tetap sama) ...
+        // 4. Perhitungan Agregat Nilai & Status Kenaikan
+        if (nilaiList.length === 0) return res.status(404).json({ message: `Tidak ada data nilai untuk periode ini.` });
+        
         let jumlah_nilai = 0;
         nilaiList.forEach(n => { jumlah_nilai += n.nilai_akhir ? Number(n.nilai_akhir) : 0; });
         const rata_rata = nilaiList.length > 0 ? (jumlah_nilai / nilaiList.length) : 0;
         const predikat_keseluruhan = getPredikat(rata_rata);
         
-        const [statusData] = await pool.query(
-            'SELECT status_kenaikan FROM santri_kelas WHERE id_santri = ? AND tahun_ajaran = ?',
-            [id_santri, tahun_ajaran]
-        );
-        
+        const [statusData] = await pool.query('SELECT status_kenaikan FROM santri_kelas WHERE id_santri = ? AND tahun_ajaran = ?', [id_santri, tahun_ajaran]);
         const status_kenaikan = (statusData.length > 0) ? statusData[0].status_kenaikan : "Belum Ditentukan";
 
+        // 5. Pengelompokan nilai per kategori
         const nilai_per_kategori = nilaiList.reduce((acc, nilai) => {
             const kategori = nilai.kategori || 'Lainnya';
             if (!acc[kategori]) acc[kategori] = [];
-            
             acc[kategori].push({
                 mata_pelajaran: nilai.nama_mapel,
                 nilai_akhir: nilai.nilai_akhir,
@@ -349,23 +353,13 @@ exports.getRaporSemester = async (req, res) => {
             return acc;
         }, {});
         
+        // 6. Susun respons JSON final
         const rapor = {
-            santri_id: id_santri,
-            periode: {
-                tahun_ajaran: parseInt(tahun_ajaran),
-                semester: semester
-            },
-            rekapitulasi: {
-                jumlah_nilai: parseFloat(jumlah_nilai.toFixed(2)),
-                rata_rata: parseFloat(rata_rata.toFixed(2)),
-                predikat: predikat_keseluruhan,
-                status_kenaikan: status_kenaikan
-            },
-            detail_nilai: nilai_per_kategori
+            rekapitulasi: { jumlah_nilai: parseFloat(jumlah_nilai.toFixed(2)), rata_rata: parseFloat(rata_rata.toFixed(2)), predikat: predikat_keseluruhan, status_kenaikan },
+            detail_nilai: nilai_per_kategori,
+            rekap_non_akademik: { absensi, catatan_perilaku: catatanPerilaku }
         };
-
         res.status(200).json(rapor);
-
     } catch (error) {
         console.error("Error saat generate rapor:", error);
         res.status(500).json({ message: "Gagal mengambil data rapor." });
