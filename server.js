@@ -66,6 +66,7 @@ const guruRoutes = require('./routes/guruRoutes');
 const guruManagementRoutes = require('./routes/guruManagementRoutes'); 
 const kelasManagementRoutes = require('./routes/kelasManagementRoutes');
 const akademikRoutes = require('./routes/akademikRoutes');
+const waliKelasRoutes = require('./routes/walikelasRoutes');
 
 
 app.use('/api/auth', authRoutes);
@@ -76,6 +77,7 @@ app.use('/api/guru', guruRoutes);
 app.use('/api/admin', guruManagementRoutes); 
 app.use('/api/admin', kelasManagementRoutes);
 app.use('/api/admin', akademikRoutes);
+app.use('/api/wali-kelas', waliKelasRoutes); 
 
 
 // --- Rute Dasar & Listener Server ---

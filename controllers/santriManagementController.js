@@ -157,14 +157,12 @@ exports.deleteSantri = async (req, res) => {
 
 // --- Admin: Melihat Semua Data Santri (Dengan Pengelompokan) ---
 exports.getAllSantri = async (req, res) => {
-    // Ambil tahun ajaran saat ini untuk memfilter santri yang aktif di tahun ini
-    const tahun_ajaran_sekarang = new Date().getFullYear();
-
     try {
-        // Query ini sekarang lebih kompleks, menggabungkan 5 tabel
+        // --- QUERY DIPERBAIKI DENGAN LEFT JOIN ---
         const [santriList] = await pool.query(`
             SELECT 
                 s.id AS id_santri,
+                s.nomor_induk,
                 s.nama_lengkap AS nama_santri,
                 s.nisn,
                 s.foto_profil,
@@ -176,53 +174,29 @@ exports.getAllSantri = async (req, res) => {
             LEFT JOIN santri_kelas sk ON s.id = sk.id_santri
             LEFT JOIN kelas k ON sk.id_kelas = k.id
             LEFT JOIN jenjang_pendidikan jp ON k.id_jenjang = jp.id
-            WHERE sk.tahun_ajaran = ? OR sk.tahun_ajaran IS NULL
-            ORDER BY jp.nama_jenjang, k.nama_kelas, s.nama_lengkap
-        `, [tahun_ajaran_sekarang]);
+            ORDER BY s.nama_lengkap
+        `);
 
-        // Mengelompokkan hasil berdasarkan jenjang dan kelas
+        // Logika pengelompokan yang sudah ada akan menangani santri yang belum punya kelas
         const groupedData = santriList.reduce((acc, santri) => {
-            // Tentukan kategori jenjang, default ke 'Belum Ditempatkan'
-            const jenjang = santri.nama_jenjang || 'Santri Belum Ditempatkan di Kelas';
-            // Tentukan nama kelas
-            const kelas = santri.nama_kelas;
+            const jenjang = santri.nama_jenjang || 'Santri Belum Ditempatkan';
+            if (!acc[jenjang]) acc[jenjang] = {};
 
-            // Buat objek jenjang jika belum ada
-            if (!acc[jenjang]) {
-                acc[jenjang] = {};
-            }
+            const kelas = santri.nama_kelas || 'Tanpa Kelas';
+            if (!acc[jenjang][kelas]) acc[jenjang][kelas] = [];
 
-            // Jika santri punya kelas, kelompokkan berdasarkan nama kelas
-            if (kelas) {
-                if (!acc[jenjang][kelas]) {
-                    acc[jenjang][kelas] = [];
-                }
-                acc[jenjang][kelas].push({
-                    id_santri: santri.id_santri,
-                    nama_santri: santri.nama_santri,
-                    nisn: santri.nisn,
-                    foto_profil: santri.foto_profil,
-                    nama_wali: santri.nama_wali
-                });
-            } else {
-                // Jika santri belum punya kelas, masukkan ke dalam array 'tanpa_kelas'
-                if (!acc[jenjang].tanpa_kelas) {
-                    acc[jenjang].tanpa_kelas = [];
-                }
-                 acc[jenjang].tanpa_kelas.push({
-                    id_santri: santri.id_santri,
-                    nama_santri: santri.nama_santri,
-                    nisn: santri.nisn,
-                    foto_profil: santri.foto_profil,
-                    nama_wali: santri.nama_wali
-                });
-            }
-            
+            acc[jenjang][kelas].push({
+                id_santri: santri.id_santri,
+                nomor_induk: santri.nomor_induk,
+                nama_santri: santri.nama_santri,
+                nisn: santri.nisn,
+                foto_profil: santri.foto_profil,
+                nama_wali: santri.nama_wali
+            });
             return acc;
         }, {});
-
+        
         res.status(200).json(groupedData);
-
     } catch (error) {
         console.error('Error saat mengambil semua data santri:', error);
         res.status(500).json({ message: 'Gagal mengambil data semua santri.' });
